@@ -84,9 +84,7 @@ def get_char(char: str) -> str:
     return CHAR_MAP.get(char, char)
 
 
-def get_color(color: int, effect: int) -> str:
-    if effect == 1:
-        return "e"
+def get_color(color: int) -> str:
     return COLOR_MAP.get(color, "w")
 
 
@@ -95,6 +93,13 @@ def get_size(size: int) -> int:
     # 1 = large
     # 2 = small
     return 1 if size == 2 else 0
+
+def get_style(effect: int) -> int:
+    # FlightFactor's 777v2 style uses the following values
+    # 0 = normal
+    # 1 = highlighted
+    # 2 = reverse
+    return 1 if effect == 1 else 0
 
 
 def fetch_dataref_mapping(device: CduDevice):
@@ -135,8 +140,9 @@ def generate_display_json(device: CduDevice, values: dict[str, str]):
 
             display_data[index] = [
                 get_char(char),
-                get_color(color, effect),
+                get_color(color),
                 get_size(size),
+                get_style(effect)
             ]
 
     return json.dumps({"Target": "Display", "Data": display_data})
