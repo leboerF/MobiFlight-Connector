@@ -1,21 +1,21 @@
 """
-Adds support for the Zibo 737 in X-Plane
+Adds support for the default FMS in X-Plane
 
 Many X-Plane aircraft have similar formats for datarefs and the means of retrieving, translating and sending updates is mostly the same.
 
 In order to support multiple CDU devices seamlessly, a dynamic approach is taken whereby an enum class is defined that contains the supported devices.
 A device is considered "supported" if it exists in the aircraft. Some aircraft have 3 CDUs while others have 2.
-Each enum member is assigned a value that represents the X-Plane dataref identifier. Example: fmc1 of laminar/B738/fmc1/Line04_I.
+Each enum member is assigned a value that is used to construct the X-Plane dataref identifier. Example: "fms_cdu1" in "sim/cockpit2/radios/indicators/fms_cdu1_text_line0".
 
 Upon script start, MobiFlight is probed (get_available_devices()) to detect the devices connected to the PC. Any device that returns a successful response is then tracked.
 
-Two tasks are started independently for each avialable CDU device.
+Two tasks are started independently for each available CDU device.
 1. handle_dataref_updates -> Listens to X-Plane's WebSocket server for dataref updates for that specific CDU and pushes an event to a queue
 2. handle_device_update   -> Listens to the queue and dispatches updates to MobiFlight to update that CDU
 
 Tasks are started independently for each CDU device to ensure each device can update quickly, particularly when players might be performing shared cockpit flights.
 
-Upon a failed connection while dispatching updates to MobiFlight, the handle_device_update function use `async for` with the websockets client. The failed message is put back in the queue, the loop continues to the next iteration which then reconnects again.
+Upon a failed connection while dispatching updates to MobiFlight, the handle_device_update function uses `async for` with the websockets client. The failed message is put back in the queue, the loop continues to the next iteration which then reconnects again.
 The failed message is picked back up and dispatched to MobiFlight. This ensures a user's device eventually receives the updated display contents and doesn't hang which would require the user to cycle the page again.
 """
 
@@ -24,8 +24,9 @@ import base64
 import json
 import logging
 import urllib.request
-import websockets
 from enum import StrEnum
+
+import websockets
 
 CDU_COLUMNS = 24
 CDU_ROWS = 14
@@ -41,20 +42,25 @@ WS_CAPTAIN = f"ws://{WEBSOCKET_HOST}:{WEBSOCKET_PORT}/winwing/cdu-captain"
 WS_CO_PILOT = f"ws://{WEBSOCKET_HOST}:{WEBSOCKET_PORT}/winwing/cdu-co-pilot"
 WS_OBSERVER = f"ws://{WEBSOCKET_HOST}:{WEBSOCKET_PORT}/winwing/cdu-observer"
 
-BALLOT_BOX = "☐"
-DEGREES = "°"
-
-CHAR_MAP = {"#": BALLOT_BOX, "*": DEGREES}
-COLOR_MAP = {1: "w", 2: "m", 3: "g", 4: "c", 5: "e", 6: "c"}
+COLOR_MAP = {
+  0: "e",  # Grey instead of black, which doesn't exist
+  1: "c",
+  2: "r",
+  3: "y",
+  4: "g",
+  5: "m",
+  6: "a",
+  7: "w",
+}
 
 
 FONT_REQUEST = json.dumps({"Target": "Font", "Data": "Boeing"})
 
 
 class CduDevice(StrEnum):
-    Captain = "cduL"
-    CoPilot = "cduR"
-    Observer = "cduC"
+    Captain = "fms_cdu1"
+    CoPilot = "fms_cdu2"
+    Observer = "fms_cdu3"
 
     def get_endpoint(self) -> str:
         match self:
@@ -67,39 +73,14 @@ class CduDevice(StrEnum):
             case _:
                 raise KeyError(f"Invalid device specified {self}")
 
-    def get_symbol_dataref(self) -> str:
-        return f"1-sim/{self}/display/symbols"
+    def get_dataref_prefix(self) -> str:
+        return f"sim/cockpit2/radios/indicators/{self}"
 
-    def get_symbol_color_dataref(self) -> str:
-        return f"1-sim/{self}/display/symbolsColor"
+    def get_text_dataref(self, line) -> str:
+        return f"sim/cockpit2/radios/indicators/{self}_text_line{line}"
 
-    def get_symbol_size_dataref(self) -> str:
-        return f"1-sim/{self}/display/symbolsSize"
-
-    def get_symbol_effects_dataref(self) -> str:
-        return f"1-sim/{self}/display/symbolsEffects"
-
-
-def get_char(char: str) -> str:
-    return CHAR_MAP.get(char, char)
-
-
-def get_color(color: int) -> str:
-    return COLOR_MAP.get(color, "w")
-
-
-def get_size(size: int) -> int:
-    # FlightFactor's 777v2 size starts at 1
-    # 1 = large
-    # 2 = small
-    return 1 if size == 2 else 0
-
-def get_style(effect: int) -> int:
-    # FlightFactor's 777v2 style uses the following values
-    # 0 = normal
-    # 1 = highlighted
-    # 2 = reverse
-    return 1 if effect == 1 else 0
+    def get_style_dataref(self, line) -> str:
+        return f"sim/cockpit2/radios/indicators/{self}_style_line{line}"
 
 
 def fetch_dataref_mapping(device: CduDevice):
@@ -108,42 +89,53 @@ def fetch_dataref_mapping(device: CduDevice):
 
         return dict(
             map(
-                lambda dataref: (int(dataref["id"]), str(dataref["name"]).strip()),
+                lambda dataref: (int(dataref["id"]), str(dataref["name"])),
                 filter(
-                    lambda x: device.get_symbol_dataref() in str(x["name"]),
+                    lambda x: device.get_dataref_prefix() in str(x["name"]),
                     response_json["data"],
                 ),
             )
         )
 
 
-def generate_display_json(device: CduDevice, values: dict[str, str]):
-    display_data = [[] for _ in range(CDU_ROWS * CDU_COLUMNS)]
+def color_from_style(style):
+    # According to the documentation
+    # (https://developer.x-plane.com/article/datarefs-for-the-cdu-screen/)
+    # the four lowest bits encode color, but only color indexes 0 through 7
+    # are defined at this point. We default to white for any color indexes that
+    # currently aren't defined.
+    return COLOR_MAP.get(style & 0xf, "w")
 
-    cdu_lines = [
-        (char, size, color, effect)
-        for char, size, color, effect in zip(
-            values[device.get_symbol_dataref()],
-            values[device.get_symbol_size_dataref()],
-            values[device.get_symbol_color_dataref()],
-            values[device.get_symbol_effects_dataref()],
-        )
-    ]
+
+def size_from_style(style):
+    return 0 if style & (1 << 7) else 1
+
+
+def reverse_video_from_style(style):
+    return 1 if style & (1 << 6) else 0
+
+
+def generate_display_json(device: CduDevice, values: dict[str, str | bytes]):
+    display_data = [[] for _ in range(CDU_CELLS)]
 
     for row in range(CDU_ROWS):
+        text = values[device.get_text_dataref(row)]
+        style = values[device.get_style_dataref(row)]
+
         for col in range(CDU_COLUMNS):
             index = row * CDU_COLUMNS + col
 
-            char, size, color, effect = cdu_lines[index]
+            # The dataref and WinWing both use Unicode, so no conversion
+            # of special characters is necessary.
+            char = text[col]
             if char == " ":
                 continue
 
-            display_data[index] = [
-                get_char(char),
-                get_color(color),
-                get_size(size),
-                get_style(effect)
-            ]
+            color = color_from_style(style[col])
+            size = size_from_style(style[col])
+            reverse_video = reverse_video_from_style(style[col])
+
+            display_data[index] = [char, color, size, reverse_video]
 
     return json.dumps({"Target": "Display", "Data": display_data})
 
@@ -163,7 +155,7 @@ async def handle_device_update(queue: asyncio.Queue, device: CduDevice):
             values = await queue.get()
 
             try:
-                elapsed = asyncio.get_event_loop().time() - last_run_time
+                elapsed = asyncio.get_running_loop().time() - last_run_time
 
                 # Weaker CPUs may experience performance issues when a websocket connection is saturated with requests, such as when pages are frequently changed.
                 # This rate limits the number of active websocket requests to MobiFlight.
@@ -173,7 +165,7 @@ async def handle_device_update(queue: asyncio.Queue, device: CduDevice):
 
                 display_json = generate_display_json(device, values)
                 await websocket.send(display_json)
-                last_run_time = asyncio.get_event_loop().time()
+                last_run_time = asyncio.get_running_loop().time()
 
             except websockets.exceptions.ConnectionClosed:
                 logging.error(
@@ -220,11 +212,10 @@ async def handle_dataref_updates(queue: asyncio.Queue, device: CduDevice):
 
                     dataref_name = dataref_map[dataref_id]
 
-                    new_values[dataref_name] = (
-                        base64.b64decode(value).decode().replace("\x00", " ")
-                        if isinstance(value, str)
-                        else value
-                    )
+                    if "text_line" in dataref_name:
+                        new_values[dataref_name] = base64.b64decode(value).decode().replace("\x00", " ")
+                    elif "style_line" in dataref_name:
+                        new_values[dataref_name] = base64.b64decode(value)
 
                 if new_values == last_known_values:
                     continue
@@ -251,19 +242,9 @@ async def get_available_devices() -> list[CduDevice]:
                 logging.info(
                     "Discovered CDU device %s at endpoint %s", device, device_endpoint
                 )
-
-                try:
-                    await socket.send(FONT_REQUEST)
-                    await asyncio.sleep(1) # wait a second for font to be set
-                except websockets.ConnectionClosed as e:
-                    logging.warning(
-                        "Attempt to change font on CDU device %s but request failed: %s",
-                        device,
-                        e,
-                    )
-                    continue
-
                 available_devices.append(device)
+                await socket.send(FONT_REQUEST)
+                await asyncio.sleep(1) # wait a second for font to be set
         except websockets.WebSocketException:
             logging.warning(
                 "Attempted to probe CDU device %s at endpoint %s but device wasn't available",

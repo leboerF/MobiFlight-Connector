@@ -1,7 +1,7 @@
 name: Check translations
 on:
   pull_request:
-    branches: [ main, mf2025/main ]
+    branches: [ main, hotfix/* ]
     paths:
       # Trigger only when files in the public/locales folder change
       - 'frontend/public/locales/**' 
@@ -29,7 +29,7 @@ jobs:
         run: cd frontend; echo "$(node src/scripts/check-translations.js)" > translation-stats.md
       
       - name: Post Translation Statistics
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

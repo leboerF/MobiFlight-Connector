@@ -278,6 +278,9 @@
     <Content Include="Scripts\Winwing\microsoft_aircraft_ec135.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="Scripts\Winwing\xplane_default_fmc.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Base\AutoUpdateChecker.cs" />
@@ -403,8 +406,6 @@
     <Compile Include="MobiFlight\InputConfig\VariableInputAction.cs" />
     <Compile Include="MobiFlight\Joysticks\AuthentiKit\AuthentiKit.cs" />
     <Compile Include="MobiFlight\Joysticks\Bodnar\BodnarReport.cs" />
-    <Compile Include="MobiFlight\Joysticks\Bodnar\BU0836X.cs" />
-    <Compile Include="MobiFlight\Joysticks\Bodnar\BU0836A.cs" />
     <Compile Include="MobiFlight\Joysticks\Bodnar\BodnarBoard.cs" />
     <Compile Include="MobiFlight\Joysticks\ControllerFactory.cs" />
     <Compile Include="MobiFlight\Joysticks\HidControllerFactory.cs" />
